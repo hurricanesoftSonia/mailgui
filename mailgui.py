@@ -11,6 +11,7 @@ import email
 import email.utils
 import ssl
 import os
+import sys
 import json
 import threading
 from email.mime.text import MIMEText
@@ -20,7 +21,12 @@ from email import encoders
 from email.header import decode_header
 from email.utils import parseaddr
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+# PyInstaller frozen exe: use exe directory; otherwise use script directory
+if getattr(sys, 'frozen', False):
+    _base_dir = os.path.dirname(sys.executable)
+else:
+    _base_dir = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(_base_dir, "config.json")
 
 
 def _decode_header(s):
