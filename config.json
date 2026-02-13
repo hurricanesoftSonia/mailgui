@@ -1,0 +1,17 @@
+{
+  "email": "",
+  "name": "",
+  "password": "",
+  "signature": "",
+  "smtp": {
+    "host": "mx.hurricanesoft.com.tw",
+    "port": 25,
+    "starttls": true,
+    "verify_ssl": false
+  },
+  "imap": {
+    "host": "webmail.hurricanesoft.com.tw",
+    "port": 993,
+    "ssl": true
+  }
+}
