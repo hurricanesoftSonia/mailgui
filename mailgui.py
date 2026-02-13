@@ -102,6 +102,19 @@ class MailConfig:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 self.data = json.load(f)
+        else:
+            # 自動建立預設 config
+            self.data = {
+                "email": "",
+                "name": "",
+                "password": "",
+                "signature": "",
+                "recv_protocol": "pop3",
+                "smtp": {"host": "mx.hurricanesoft.com.tw", "port": 25, "starttls": True, "verify_ssl": False},
+                "imap": {"host": "webmail.hurricanesoft.com.tw", "port": 993, "ssl": True},
+                "pop3": {"host": "webmail.hurricanesoft.com.tw", "port": 995, "ssl": True}
+            }
+            self.save()
 
     def save(self):
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:

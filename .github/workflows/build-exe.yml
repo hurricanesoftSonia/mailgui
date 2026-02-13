@@ -22,11 +22,16 @@ jobs:
         run: |
           pyinstaller --onefile --windowed --name MailGUI --icon NONE mailgui.py
       
+      - name: Copy config
+        run: copy config.json dist\config.json
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: MailGUI-Windows
-          path: dist/MailGUI.exe
+          path: |
+            dist/MailGUI.exe
+            dist/config.json
 
       - name: Create Release
         if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
