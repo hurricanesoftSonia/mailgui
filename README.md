@@ -14,10 +14,48 @@ Windows 桌面郵件收發軟體，支援 SMTP 寄信 / IMAP 收信。
 
 ## 快速開始
 
-### 直接執行
+### GUI 模式（圖形介面）
 
 ```bash
 python mailgui.py
+```
+
+### CLI 模式（命令列）
+
+**設定帳號（互動式）：**
+```bash
+# 互動式設定（推薦 - 密碼會加密儲存）
+python mailgui.py setup
+
+# 快速設定（使用預設伺服器）
+python mailgui.py setup --email luna.yeh@hurricanesoft.com.tw --name "Luna Yeh"
+```
+
+**查看配置檔位置：**
+```bash
+python mailgui.py config
+```
+
+**發送郵件：**
+```bash
+# 簡單發送
+python mailgui.py send --to user@example.com --subject "測試" --body "Hello"
+
+# 從檔案讀取內容
+python mailgui.py send --to user@example.com --subject "報告" --file report.txt
+
+# 加上 CC 和附件
+python mailgui.py send --to user@example.com --subject "文件" --body "請查收" \
+  --cc other@example.com --attach file1.pdf file2.jpg
+```
+
+**接收郵件：**
+```bash
+# 接收最新 10 封郵件（預設）
+python mailgui.py receive
+
+# 接收最新 20 封郵件
+python mailgui.py receive --count 20
 ```
 
 ### 打包成 .exe (Windows)
@@ -46,12 +84,19 @@ pyinstaller --onefile --windowed --name MailGUI mailgui.py
 
 預設已配置颶風軟體公司郵件伺服器，只需填入 email 和密碼即可使用。
 
+## 安全性
+
+- 🔐 **密碼加密儲存** - 使用 Fernet (對稱加密) 加密密碼
+- 🔑 **密鑰保護** - 加密密鑰儲存在 `~/.mailgui/.mailgui.key`，權限設為 600
+- 🛡️ **檔案權限** - config.json 自動設定為僅擁有者可讀寫 (600)
+- 📁 **安全位置** - 配置檔預設儲存在用戶主目錄 `~/.mailgui/`
+
 ## 技術
 
 - Python 3.9+
 - tkinter (內建 GUI)
 - imaplib / smtplib (標準庫)
-- 無需額外安裝套件
+- cryptography (密碼加密)
 
 ## License
 

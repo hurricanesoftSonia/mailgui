@@ -2,6 +2,8 @@
 MailGUI - Hurricane Software Mail Client
 A Windows-friendly desktop email client with SMTP send and IMAP receive.
 """
+__version__ = "1.1.0"
+
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 import imaplib
@@ -14,19 +16,87 @@ import os
 import sys
 import json
 import threading
+import argparse
+import base64
+import getpass
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 from email.header import decode_header
 from email.utils import parseaddr
+from cryptography.fernet import Fernet
 
 # PyInstaller frozen exe: use exe directory; otherwise use script directory
 if getattr(sys, 'frozen', False):
-    _base_dir = os.path.dirname(sys.executable)
+    # When frozen (packaged), check multiple possible locations
+    if sys.platform == 'darwin':  # macOS .app bundle
+        _base_dir = os.path.dirname(os.path.dirname(os.path.dirname(sys.executable)))  # Go up to .app
+        # Try Contents/Resources first (where pyinstaller puts data files)
+        _resources_dir = os.path.join(os.path.dirname(sys.executable), '..', 'Resources')
+        if os.path.exists(os.path.join(_resources_dir, 'config.json')):
+            _base_dir = _resources_dir
+    else:
+        _base_dir = os.path.dirname(sys.executable)
 else:
     _base_dir = os.path.dirname(os.path.abspath(__file__))
+
 CONFIG_FILE = os.path.join(_base_dir, "config.json")
+
+# If config doesn't exist in expected location, try current directory and home directory
+if not os.path.exists(CONFIG_FILE):
+    for try_path in [
+        os.path.join(os.getcwd(), "config.json"),
+        os.path.join(os.path.expanduser("~"), ".mailgui", "config.json"),
+    ]:
+        if os.path.exists(try_path):
+            CONFIG_FILE = try_path
+            break
+    else:
+        # Create default in home directory
+        CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".mailgui", "config.json")
+        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+
+# Encryption key file (stored next to config)
+KEY_FILE = os.path.join(os.path.dirname(CONFIG_FILE), ".mailgui.key")
+
+
+def _get_or_create_key():
+    """Get or create encryption key"""
+    if os.path.exists(KEY_FILE):
+        with open(KEY_FILE, 'rb') as f:
+            return f.read()
+    else:
+        # Generate a new key
+        key = Fernet.generate_key()
+        os.makedirs(os.path.dirname(KEY_FILE), exist_ok=True)
+        with open(KEY_FILE, 'wb') as f:
+            f.write(key)
+        # Set file permissions to read/write for owner only
+        os.chmod(KEY_FILE, 0o600)
+        return key
+
+
+def _encrypt_password(password):
+    """Encrypt password using Fernet"""
+    if not password:
+        return ""
+    key = _get_or_create_key()
+    f = Fernet(key)
+    return f.encrypt(password.encode()).decode()
+
+
+def _decrypt_password(encrypted_password):
+    """Decrypt password using Fernet"""
+    if not encrypted_password:
+        return ""
+    try:
+        key = _get_or_create_key()
+        f = Fernet(key)
+        return f.decrypt(encrypted_password.encode()).decode()
+    except Exception:
+        # If decryption fails, assume it's plain text (for backward compatibility)
+        return encrypted_password
 
 
 def _decode_header(s):
@@ -102,6 +172,9 @@ class MailConfig:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 self.data = json.load(f)
+                # Decrypt password when loading
+                if self.data.get("password"):
+                    self.data["password"] = _decrypt_password(self.data["password"])
         else:
             # 自動建立預設 config
             self.data = {
@@ -117,8 +190,17 @@ class MailConfig:
             self.save()
 
     def save(self):
+        # Create a copy of data for saving
+        save_data = self.data.copy()
+        # Encrypt password before saving
+        if save_data.get("password"):
+            save_data["password"] = _encrypt_password(save_data["password"])
+
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, indent=2, ensure_ascii=False)
+            json.dump(save_data, f, indent=2, ensure_ascii=False)
+
+        # Set file permissions to read/write for owner only
+        os.chmod(CONFIG_FILE, 0o600)
 
     def get(self, key, default=""):
         return self.data.get(key, default)
@@ -392,7 +474,7 @@ class ComposeDialog(tk.Toplevel):
 class MailGUI:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("📧 MailGUI - Hurricane Software Mail Client")
+        self.root.title(f"📧 MailGUI v{__version__} - Hurricane Software Mail Client")
         self.root.geometry("1000x650")
         self.config = MailConfig()
         self.messages = []  # list of (uid, flags, parsed_msg, raw)
@@ -416,14 +498,14 @@ class MailGUI:
         self.root.config(menu=menubar)
 
         # Toolbar
-        toolbar = ttk.Frame(self.root)
-        toolbar.pack(fill="x", padx=5, pady=3)
-        ttk.Button(toolbar, text="📥 收信", command=self.fetch_mail).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="📝 新郵件", command=self.compose).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="↩ 回覆", command=self.reply).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="↩↩ 全部回覆", command=self.reply_all).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="🗑 刪除", command=self.delete_mail).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="⚙ 設定", command=self.open_settings).pack(side="right", padx=2)
+        self.toolbar = ttk.Frame(self.root)
+        self.toolbar.pack(fill="x", padx=5, pady=3)
+        ttk.Button(self.toolbar, text="📥 收信", command=self.fetch_mail).pack(side="left", padx=2)
+        ttk.Button(self.toolbar, text="📝 新郵件", command=self.compose).pack(side="left", padx=2)
+        ttk.Button(self.toolbar, text="↩ 回覆", command=self.reply).pack(side="left", padx=2)
+        ttk.Button(self.toolbar, text="↩↩ 全部回覆", command=self.reply_all).pack(side="left", padx=2)
+        ttk.Button(self.toolbar, text="🗑 刪除", command=self.delete_mail).pack(side="left", padx=2)
+        ttk.Button(self.toolbar, text="⚙ 設定", command=self.open_settings).pack(side="right", padx=2)
 
         # Search bar
         search_frame = ttk.Frame(self.root)
@@ -562,9 +644,20 @@ class MailGUI:
             messagebox.showwarning("提醒", "請先設定帳號！")
             self.open_settings()
             return
+
+        # Disable buttons during fetch
+        self._set_buttons_state("disabled")
         self.current_folder = self.folder_var.get()
-        self.status_var.set("收信中...")
+        self.status_var.set("📨 收信中...")
+        self.root.config(cursor="watch")
+
         threading.Thread(target=self._fetch_thread, daemon=True).start()
+
+    def _set_buttons_state(self, state):
+        """Enable or disable toolbar buttons"""
+        for widget in self.toolbar.winfo_children():
+            if isinstance(widget, ttk.Button):
+                widget.configure(state=state)
 
     def _fetch_thread(self):
         try:
@@ -574,8 +667,16 @@ class MailGUI:
                 self._fetch_pop3(cfg)
             else:
                 self._fetch_imap(cfg)
+            # Re-enable buttons after successful fetch
+            self.root.after(0, self._fetch_complete)
         except Exception as e:
             self.root.after(0, lambda: self._fetch_error(str(e)))
+
+    def _fetch_complete(self):
+        """Called when fetch completes successfully"""
+        self.status_var.set(f"✓ 已載入 {len(self.messages)} 封郵件")
+        self.root.config(cursor="")
+        self._set_buttons_state("normal")
 
     def _fetch_pop3(self, cfg):
         pop3_cfg = cfg.get("pop3", {})
@@ -593,8 +694,9 @@ class MailGUI:
 
         # Get message count
         count, _ = M.stat()
-        # Fetch last 200 messages
-        start = max(1, count - 199)
+        # Fetch last 50 messages (configurable limit for performance)
+        fetch_limit = 50
+        start = max(1, count - fetch_limit + 1)
 
         messages = []
         for i in range(count, start - 1, -1):
@@ -627,7 +729,8 @@ class MailGUI:
         # Search
         _, data = M.uid("SEARCH", None, "ALL")
         uids = data[0].split()
-        uids = uids[-200:]  # Last 200 messages
+        fetch_limit = 50  # Limit for performance
+        uids = uids[-fetch_limit:]  # Last N messages
 
         messages = []
         if uids:
@@ -660,7 +763,9 @@ class MailGUI:
         self.root.after(0, self._update_list)
 
     def _fetch_error(self, err):
-        self.status_var.set("收信失敗")
+        self.status_var.set("✗ 收信失敗")
+        self.root.config(cursor="")
+        self._set_buttons_state("normal")
         messagebox.showerror("收信錯誤", f"無法連線：{err}")
 
     def _update_list(self):
@@ -743,9 +848,290 @@ class MailGUI:
         self.root.mainloop()
 
 
+def cli_send(args, config):
+    """Send email via CLI"""
+    cfg = config.data
+
+    if not cfg.get("email") or not cfg.get("password"):
+        print("Error: Email and password not configured. Run GUI mode to configure.")
+        sys.exit(1)
+
+    # Create message
+    msg = MIMEMultipart()
+    msg['From'] = f"{cfg.get('name', '')} <{cfg['email']}>"
+    msg['To'] = args.to
+    msg['Subject'] = args.subject
+
+    if args.cc:
+        msg['Cc'] = args.cc
+
+    # Add body
+    body = args.body
+    if args.file:
+        with open(args.file, 'r', encoding='utf-8') as f:
+            body = f.read()
+
+    msg.attach(MIMEText(body, 'plain'))
+
+    # Add attachments
+    if args.attach:
+        for filepath in args.attach:
+            if os.path.exists(filepath):
+                with open(filepath, 'rb') as f:
+                    part = MIMEBase('application', 'octet-stream')
+                    part.set_payload(f.read())
+                    encoders.encode_base64(part)
+                    part.add_header('Content-Disposition', f'attachment; filename={os.path.basename(filepath)}')
+                    msg.attach(part)
+
+    # Send email
+    try:
+        smtp_cfg = cfg["smtp"]
+        use_starttls = smtp_cfg.get("starttls", False)
+
+        if use_starttls:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            s = smtplib.SMTP(smtp_cfg["host"], smtp_cfg["port"])
+            s.ehlo()
+            s.starttls(context=ctx)
+            s.ehlo()
+        else:
+            s = smtplib.SMTP_SSL(smtp_cfg["host"], smtp_cfg["port"])
+
+        with s:
+            s.login(cfg["email"], str(cfg["password"]))
+            recipients = [args.to]
+            if args.cc:
+                recipients.extend([a.strip() for a in args.cc.split(",")])
+            s.send_message(msg, to_addrs=recipients)
+
+        print(f"✓ Email sent successfully to {args.to}")
+    except Exception as e:
+        print(f"✗ Failed to send email: {e}")
+        sys.exit(1)
+
+
+def cli_receive(args, config):
+    """Receive emails via CLI"""
+    cfg = config.data
+
+    if not cfg.get("email") or not cfg.get("password"):
+        print("Error: Email and password not configured. Run GUI mode to configure.")
+        sys.exit(1)
+
+    protocol = cfg.get("recv_protocol", "pop3")
+
+    try:
+        if protocol == "imap":
+            imap_cfg = cfg["imap"]
+            M = imaplib.IMAP4_SSL(imap_cfg["host"], imap_cfg["port"])
+            M.login(cfg["email"], str(cfg["password"]))
+            M.select("INBOX")
+
+            _, data = M.search(None, "ALL")
+            mail_ids = data[0].split()
+
+            count = min(args.count, len(mail_ids))
+            print(f"\n📬 Fetching {count} emails from INBOX...\n")
+
+            for i in range(1, count + 1):
+                mail_id = mail_ids[-i]
+                _, msg_data = M.fetch(mail_id, "(RFC822)")
+                raw_email = msg_data[0][1]
+                msg = email.message_from_bytes(raw_email)
+
+                from_addr = parseaddr(msg.get("From", ""))[1]
+                subject = _decode_header(msg.get("Subject", "(無主旨)"))
+                date = msg.get("Date", "")
+
+                print(f"[{i}] From: {from_addr}")
+                print(f"    Subject: {subject}")
+                print(f"    Date: {date}")
+                print()
+
+            M.close()
+            M.logout()
+        else:  # POP3
+            pop3_cfg = cfg["pop3"]
+            M = poplib.POP3_SSL(pop3_cfg["host"], pop3_cfg["port"])
+            M.user(cfg["email"])
+            M.pass_(str(cfg["password"]))
+
+            num_messages = len(M.list()[1])
+            count = min(args.count, num_messages)
+
+            print(f"\n📬 Fetching {count} emails...\n")
+
+            for i in range(1, count + 1):
+                _, lines, _ = M.retr(num_messages - i + 1)
+                raw_email = b"\r\n".join(lines)
+                msg = email.message_from_bytes(raw_email)
+
+                from_addr = parseaddr(msg.get("From", ""))[1]
+                subject = _decode_header(msg.get("Subject", "(無主旨)"))
+                date = msg.get("Date", "")
+
+                print(f"[{i}] From: {from_addr}")
+                print(f"    Subject: {subject}")
+                print(f"    Date: {date}")
+                print()
+
+            M.quit()
+
+    except Exception as e:
+        print(f"✗ Failed to receive emails: {e}")
+        sys.exit(1)
+
+
+def cli_setup(args, config):
+    """Setup email account via CLI"""
+    print("📧 MailGUI Account Setup\n")
+
+    # Email
+    if args.email:
+        email_addr = args.email
+    else:
+        email_addr = input("Email address: ").strip()
+
+    # Name
+    if args.name:
+        name = args.name
+    else:
+        name = input("Display name (optional): ").strip()
+
+    # Password
+    if args.password:
+        password = args.password
+        print("⚠️  Warning: Passing password via --password is insecure!")
+    else:
+        password = getpass.getpass("Password: ")
+        password_confirm = getpass.getpass("Confirm password: ")
+        if password != password_confirm:
+            print("✗ Passwords don't match!")
+            sys.exit(1)
+
+    # Server settings
+    use_defaults = True
+    if not args.smtp_host:
+        use_default = input("Use default Hurricane Software mail servers? [Y/n]: ").strip().lower()
+        use_defaults = use_default in ['', 'y', 'yes']
+
+    if use_defaults and not args.smtp_host:
+        smtp_host = "hurricanesoft.com.tw"
+        smtp_port = 465
+        smtp_ssl = True
+        imap_host = "hurricanesoft.com.tw"
+        imap_port = 993
+        pop3_host = "hurricanesoft.com.tw"
+        pop3_port = 995
+        recv_protocol = "pop3"
+    else:
+        smtp_host = args.smtp_host or input("SMTP server: ").strip()
+        smtp_port = args.smtp_port or int(input("SMTP port [465]: ").strip() or "465")
+        smtp_ssl = smtp_port == 465
+        recv_protocol = args.protocol or input("Receive protocol (imap/pop3) [pop3]: ").strip().lower() or "pop3"
+
+        if recv_protocol == "imap":
+            imap_host = args.imap_host or input("IMAP server: ").strip()
+            imap_port = args.imap_port or int(input("IMAP port [993]: ").strip() or "993")
+            pop3_host = imap_host
+            pop3_port = 995
+        else:
+            pop3_host = args.pop3_host or input("POP3 server: ").strip()
+            pop3_port = args.pop3_port or int(input("POP3 port [995]: ").strip() or "995")
+            imap_host = pop3_host
+            imap_port = 993
+
+    # Update config
+    config.set("email", email_addr)
+    config.set("name", name)
+    config.set("password", password)
+    config.set("recv_protocol", recv_protocol)
+    config.set("smtp", {
+        "host": smtp_host,
+        "port": smtp_port,
+        "starttls": not smtp_ssl,
+        "verify_ssl": False
+    })
+    config.set("imap", {
+        "host": imap_host,
+        "port": imap_port,
+        "ssl": True
+    })
+    config.set("pop3", {
+        "host": pop3_host,
+        "port": pop3_port,
+        "ssl": True
+    })
+
+    config.save()
+
+    print(f"\n✅ Account configured successfully!")
+    print(f"📧 Email: {email_addr}")
+    print(f"📁 Config file: {CONFIG_FILE}")
+    print(f"🔐 Password encrypted and saved securely")
+
+
 def main():
-    app = MailGUI()
-    app.run()
+    parser = argparse.ArgumentParser(
+        description='MailGUI - Hurricane Software Mail Client',
+        epilog='Run without arguments to launch GUI mode'
+    )
+
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+
+    # Send command
+    send_parser = subparsers.add_parser('send', help='Send an email')
+    send_parser.add_argument('--to', required=True, help='Recipient email address')
+    send_parser.add_argument('--subject', required=True, help='Email subject')
+    send_parser.add_argument('--body', help='Email body text')
+    send_parser.add_argument('--file', help='Read email body from file')
+    send_parser.add_argument('--cc', help='CC recipients (comma-separated)')
+    send_parser.add_argument('--attach', nargs='+', help='Attachment file paths')
+
+    # Receive command
+    recv_parser = subparsers.add_parser('receive', help='Receive emails')
+    recv_parser.add_argument('--count', type=int, default=10, help='Number of emails to fetch (default: 10)')
+
+    # Setup command
+    setup_parser = subparsers.add_parser('setup', help='Configure email account (interactive)')
+    setup_parser.add_argument('--email', help='Email address')
+    setup_parser.add_argument('--name', help='Display name')
+    setup_parser.add_argument('--password', help='Password (insecure - prompt recommended)')
+    setup_parser.add_argument('--smtp-host', help='SMTP server')
+    setup_parser.add_argument('--smtp-port', type=int, help='SMTP port')
+    setup_parser.add_argument('--imap-host', help='IMAP server')
+    setup_parser.add_argument('--imap-port', type=int, help='IMAP port')
+    setup_parser.add_argument('--pop3-host', help='POP3 server')
+    setup_parser.add_argument('--pop3-port', type=int, help='POP3 port')
+    setup_parser.add_argument('--protocol', choices=['imap', 'pop3'], help='Receive protocol')
+
+    # Config command
+    config_parser = subparsers.add_parser('config', help='Show configuration file location')
+
+    args = parser.parse_args()
+
+    # Load config
+    config = MailConfig()
+
+    if args.command == 'send':
+        cli_send(args, config)
+    elif args.command == 'receive':
+        cli_receive(args, config)
+    elif args.command == 'setup':
+        cli_setup(args, config)
+    elif args.command == 'config':
+        print(f"Configuration file: {CONFIG_FILE}")
+        print(f"Exists: {os.path.exists(CONFIG_FILE)}")
+        if os.path.exists(CONFIG_FILE):
+            print(f"Encryption key: {KEY_FILE}")
+            print(f"Password encrypted: Yes")
+    else:
+        # No command = GUI mode
+        app = MailGUI()
+        app.run()
 
 
 if __name__ == "__main__":
