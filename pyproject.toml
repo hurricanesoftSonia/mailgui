@@ -4,12 +4,15 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "mailgui"
-version = "1.0.0"
+version = "1.1.0"
 description = "Hurricane Software Desktop Mail Client (SMTP/IMAP)"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [{name = "Sonia", email = "sonia@hurricanesoft.com.tw"}]
+dependencies = [
+    "cryptography>=41.0.0",
+]
 
 [project.scripts]
 mailgui = "mailgui:main"
