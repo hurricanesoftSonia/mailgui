@@ -300,28 +300,45 @@ class SettingsDialog(tk.Toplevel):
         self.columnconfigure(1, weight=1)
 
     def save(self):
-        self.config.set("email", self.email_var.get().strip())
-        self.config.set("name", self.name_var.get().strip())
-        self.config.set("password", self.pass_var.get().strip())
-        self.config.set("signature", self.sig_text.get("1.0", "end-1c").strip())
-        self.config.set("smtp", {
-            "host": self.smtp_host.get().strip(),
-            "port": int(self.smtp_port.get().strip()),
-            "starttls": self.smtp_starttls.get(),
-            "verify_ssl": False,
-        })
-        self.config.set("recv_protocol", self.recv_protocol.get())
-        self.config.set("imap", {
-            "host": self.imap_host.get().strip(),
-            "port": int(self.imap_port.get().strip()),
-            "ssl": self.imap_ssl.get(),
-        })
-        self.config.set("pop3", {
-            "host": self.pop3_host.get().strip(),
-            "port": int(self.pop3_port.get().strip()),
-            "ssl": self.pop3_ssl.get(),
-        })
-        self.config.save()
+        # Disable save button to prevent double-click
+        for widget in self.winfo_children():
+            if isinstance(widget, ttk.Frame):
+                for btn in widget.winfo_children():
+                    if isinstance(btn, ttk.Button) and btn.cget("text") == "儲存":
+                        btn.configure(state="disabled")
+
+        # Save in background thread
+        threading.Thread(target=self._save_thread, daemon=True).start()
+
+    def _save_thread(self):
+        try:
+            self.config.set("email", self.email_var.get().strip())
+            self.config.set("name", self.name_var.get().strip())
+            self.config.set("password", self.pass_var.get().strip())
+            self.config.set("signature", self.sig_text.get("1.0", "end-1c").strip())
+            self.config.set("smtp", {
+                "host": self.smtp_host.get().strip(),
+                "port": int(self.smtp_port.get().strip()),
+                "starttls": self.smtp_starttls.get(),
+                "verify_ssl": False,
+            })
+            self.config.set("recv_protocol", self.recv_protocol.get())
+            self.config.set("imap", {
+                "host": self.imap_host.get().strip(),
+                "port": int(self.imap_port.get().strip()),
+                "ssl": self.imap_ssl.get(),
+            })
+            self.config.set("pop3", {
+                "host": self.pop3_host.get().strip(),
+                "port": int(self.pop3_port.get().strip()),
+                "ssl": self.pop3_ssl.get(),
+            })
+            self.config.save()
+            self.after(0, self._save_complete)
+        except Exception as e:
+            self.after(0, lambda: messagebox.showerror("儲存失敗", str(e)))
+
+    def _save_complete(self):
         messagebox.showinfo("設定", "設定已儲存！")
         self.destroy()
 
@@ -569,7 +586,7 @@ class MailGUI:
         self.body_text.pack(fill="both", expand=True, padx=5, pady=3)
 
         # Status bar
-        self.status_var = tk.StringVar(value="就緒 Ready")
+        self.status_var = tk.StringVar(value=f"✓ 就緒 | MailGUI v{__version__}")
         ttk.Label(self.root, textvariable=self.status_var, relief="sunken").pack(fill="x", side="bottom")
 
     def open_settings(self):
