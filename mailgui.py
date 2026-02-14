@@ -14,6 +14,7 @@ import os
 import sys
 import json
 import threading
+import argparse
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -23,10 +24,33 @@ from email.utils import parseaddr
 
 # PyInstaller frozen exe: use exe directory; otherwise use script directory
 if getattr(sys, 'frozen', False):
-    _base_dir = os.path.dirname(sys.executable)
+    # When frozen (packaged), check multiple possible locations
+    if sys.platform == 'darwin':  # macOS .app bundle
+        _base_dir = os.path.dirname(os.path.dirname(os.path.dirname(sys.executable)))  # Go up to .app
+        # Try Contents/Resources first (where pyinstaller puts data files)
+        _resources_dir = os.path.join(os.path.dirname(sys.executable), '..', 'Resources')
+        if os.path.exists(os.path.join(_resources_dir, 'config.json')):
+            _base_dir = _resources_dir
+    else:
+        _base_dir = os.path.dirname(sys.executable)
 else:
     _base_dir = os.path.dirname(os.path.abspath(__file__))
+
 CONFIG_FILE = os.path.join(_base_dir, "config.json")
+
+# If config doesn't exist in expected location, try current directory and home directory
+if not os.path.exists(CONFIG_FILE):
+    for try_path in [
+        os.path.join(os.getcwd(), "config.json"),
+        os.path.join(os.path.expanduser("~"), ".mailgui", "config.json"),
+    ]:
+        if os.path.exists(try_path):
+            CONFIG_FILE = try_path
+            break
+    else:
+        # Create default in home directory
+        CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".mailgui", "config.json")
+        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
 
 
 def _decode_header(s):
@@ -743,9 +767,183 @@ class MailGUI:
         self.root.mainloop()
 
 
+def cli_send(args, config):
+    """Send email via CLI"""
+    cfg = config.data
+
+    if not cfg.get("email") or not cfg.get("password"):
+        print("Error: Email and password not configured. Run GUI mode to configure.")
+        sys.exit(1)
+
+    # Create message
+    msg = MIMEMultipart()
+    msg['From'] = f"{cfg.get('name', '')} <{cfg['email']}>"
+    msg['To'] = args.to
+    msg['Subject'] = args.subject
+
+    if args.cc:
+        msg['Cc'] = args.cc
+
+    # Add body
+    body = args.body
+    if args.file:
+        with open(args.file, 'r', encoding='utf-8') as f:
+            body = f.read()
+
+    msg.attach(MIMEText(body, 'plain'))
+
+    # Add attachments
+    if args.attach:
+        for filepath in args.attach:
+            if os.path.exists(filepath):
+                with open(filepath, 'rb') as f:
+                    part = MIMEBase('application', 'octet-stream')
+                    part.set_payload(f.read())
+                    encoders.encode_base64(part)
+                    part.add_header('Content-Disposition', f'attachment; filename={os.path.basename(filepath)}')
+                    msg.attach(part)
+
+    # Send email
+    try:
+        smtp_cfg = cfg["smtp"]
+        use_starttls = smtp_cfg.get("starttls", False)
+
+        if use_starttls:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            s = smtplib.SMTP(smtp_cfg["host"], smtp_cfg["port"])
+            s.ehlo()
+            s.starttls(context=ctx)
+            s.ehlo()
+        else:
+            s = smtplib.SMTP_SSL(smtp_cfg["host"], smtp_cfg["port"])
+
+        with s:
+            s.login(cfg["email"], str(cfg["password"]))
+            recipients = [args.to]
+            if args.cc:
+                recipients.extend([a.strip() for a in args.cc.split(",")])
+            s.send_message(msg, to_addrs=recipients)
+
+        print(f"✓ Email sent successfully to {args.to}")
+    except Exception as e:
+        print(f"✗ Failed to send email: {e}")
+        sys.exit(1)
+
+
+def cli_receive(args, config):
+    """Receive emails via CLI"""
+    cfg = config.data
+
+    if not cfg.get("email") or not cfg.get("password"):
+        print("Error: Email and password not configured. Run GUI mode to configure.")
+        sys.exit(1)
+
+    protocol = cfg.get("recv_protocol", "pop3")
+
+    try:
+        if protocol == "imap":
+            imap_cfg = cfg["imap"]
+            M = imaplib.IMAP4_SSL(imap_cfg["host"], imap_cfg["port"])
+            M.login(cfg["email"], str(cfg["password"]))
+            M.select("INBOX")
+
+            _, data = M.search(None, "ALL")
+            mail_ids = data[0].split()
+
+            count = min(args.count, len(mail_ids))
+            print(f"\n📬 Fetching {count} emails from INBOX...\n")
+
+            for i in range(1, count + 1):
+                mail_id = mail_ids[-i]
+                _, msg_data = M.fetch(mail_id, "(RFC822)")
+                raw_email = msg_data[0][1]
+                msg = email.message_from_bytes(raw_email)
+
+                from_addr = parseaddr(msg.get("From", ""))[1]
+                subject = _decode_header(msg.get("Subject", "(無主旨)"))
+                date = msg.get("Date", "")
+
+                print(f"[{i}] From: {from_addr}")
+                print(f"    Subject: {subject}")
+                print(f"    Date: {date}")
+                print()
+
+            M.close()
+            M.logout()
+        else:  # POP3
+            pop3_cfg = cfg["pop3"]
+            M = poplib.POP3_SSL(pop3_cfg["host"], pop3_cfg["port"])
+            M.user(cfg["email"])
+            M.pass_(str(cfg["password"]))
+
+            num_messages = len(M.list()[1])
+            count = min(args.count, num_messages)
+
+            print(f"\n📬 Fetching {count} emails...\n")
+
+            for i in range(1, count + 1):
+                _, lines, _ = M.retr(num_messages - i + 1)
+                raw_email = b"\r\n".join(lines)
+                msg = email.message_from_bytes(raw_email)
+
+                from_addr = parseaddr(msg.get("From", ""))[1]
+                subject = _decode_header(msg.get("Subject", "(無主旨)"))
+                date = msg.get("Date", "")
+
+                print(f"[{i}] From: {from_addr}")
+                print(f"    Subject: {subject}")
+                print(f"    Date: {date}")
+                print()
+
+            M.quit()
+
+    except Exception as e:
+        print(f"✗ Failed to receive emails: {e}")
+        sys.exit(1)
+
+
 def main():
-    app = MailGUI()
-    app.run()
+    parser = argparse.ArgumentParser(
+        description='MailGUI - Hurricane Software Mail Client',
+        epilog='Run without arguments to launch GUI mode'
+    )
+
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+
+    # Send command
+    send_parser = subparsers.add_parser('send', help='Send an email')
+    send_parser.add_argument('--to', required=True, help='Recipient email address')
+    send_parser.add_argument('--subject', required=True, help='Email subject')
+    send_parser.add_argument('--body', help='Email body text')
+    send_parser.add_argument('--file', help='Read email body from file')
+    send_parser.add_argument('--cc', help='CC recipients (comma-separated)')
+    send_parser.add_argument('--attach', nargs='+', help='Attachment file paths')
+
+    # Receive command
+    recv_parser = subparsers.add_parser('receive', help='Receive emails')
+    recv_parser.add_argument('--count', type=int, default=10, help='Number of emails to fetch (default: 10)')
+
+    # Config command
+    config_parser = subparsers.add_parser('config', help='Show configuration file location')
+
+    args = parser.parse_args()
+
+    # Load config
+    config = MailConfig()
+
+    if args.command == 'send':
+        cli_send(args, config)
+    elif args.command == 'receive':
+        cli_receive(args, config)
+    elif args.command == 'config':
+        print(f"Configuration file: {CONFIG_FILE}")
+        print(f"Exists: {os.path.exists(CONFIG_FILE)}")
+    else:
+        # No command = GUI mode
+        app = MailGUI()
+        app.run()
 
 
 if __name__ == "__main__":
