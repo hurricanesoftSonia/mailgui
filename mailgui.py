@@ -498,14 +498,14 @@ class MailGUI:
         self.root.config(menu=menubar)
 
         # Toolbar
-        toolbar = ttk.Frame(self.root)
-        toolbar.pack(fill="x", padx=5, pady=3)
-        ttk.Button(toolbar, text="📥 收信", command=self.fetch_mail).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="📝 新郵件", command=self.compose).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="↩ 回覆", command=self.reply).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="↩↩ 全部回覆", command=self.reply_all).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="🗑 刪除", command=self.delete_mail).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="⚙ 設定", command=self.open_settings).pack(side="right", padx=2)
+        self.toolbar = ttk.Frame(self.root)
+        self.toolbar.pack(fill="x", padx=5, pady=3)
+        ttk.Button(self.toolbar, text="📥 收信", command=self.fetch_mail).pack(side="left", padx=2)
+        ttk.Button(self.toolbar, text="📝 新郵件", command=self.compose).pack(side="left", padx=2)
+        ttk.Button(self.toolbar, text="↩ 回覆", command=self.reply).pack(side="left", padx=2)
+        ttk.Button(self.toolbar, text="↩↩ 全部回覆", command=self.reply_all).pack(side="left", padx=2)
+        ttk.Button(self.toolbar, text="🗑 刪除", command=self.delete_mail).pack(side="left", padx=2)
+        ttk.Button(self.toolbar, text="⚙ 設定", command=self.open_settings).pack(side="right", padx=2)
 
         # Search bar
         search_frame = ttk.Frame(self.root)
@@ -644,9 +644,20 @@ class MailGUI:
             messagebox.showwarning("提醒", "請先設定帳號！")
             self.open_settings()
             return
+
+        # Disable buttons during fetch
+        self._set_buttons_state("disabled")
         self.current_folder = self.folder_var.get()
-        self.status_var.set("收信中...")
+        self.status_var.set("📨 收信中...")
+        self.root.config(cursor="watch")
+
         threading.Thread(target=self._fetch_thread, daemon=True).start()
+
+    def _set_buttons_state(self, state):
+        """Enable or disable toolbar buttons"""
+        for widget in self.toolbar.winfo_children():
+            if isinstance(widget, ttk.Button):
+                widget.configure(state=state)
 
     def _fetch_thread(self):
         try:
@@ -656,8 +667,16 @@ class MailGUI:
                 self._fetch_pop3(cfg)
             else:
                 self._fetch_imap(cfg)
+            # Re-enable buttons after successful fetch
+            self.root.after(0, self._fetch_complete)
         except Exception as e:
             self.root.after(0, lambda: self._fetch_error(str(e)))
+
+    def _fetch_complete(self):
+        """Called when fetch completes successfully"""
+        self.status_var.set(f"✓ 已載入 {len(self.messages)} 封郵件")
+        self.root.config(cursor="")
+        self._set_buttons_state("normal")
 
     def _fetch_pop3(self, cfg):
         pop3_cfg = cfg.get("pop3", {})
@@ -675,8 +694,9 @@ class MailGUI:
 
         # Get message count
         count, _ = M.stat()
-        # Fetch last 200 messages
-        start = max(1, count - 199)
+        # Fetch last 50 messages (configurable limit for performance)
+        fetch_limit = 50
+        start = max(1, count - fetch_limit + 1)
 
         messages = []
         for i in range(count, start - 1, -1):
@@ -709,7 +729,8 @@ class MailGUI:
         # Search
         _, data = M.uid("SEARCH", None, "ALL")
         uids = data[0].split()
-        uids = uids[-200:]  # Last 200 messages
+        fetch_limit = 50  # Limit for performance
+        uids = uids[-fetch_limit:]  # Last N messages
 
         messages = []
         if uids:
@@ -742,7 +763,9 @@ class MailGUI:
         self.root.after(0, self._update_list)
 
     def _fetch_error(self, err):
-        self.status_var.set("收信失敗")
+        self.status_var.set("✗ 收信失敗")
+        self.root.config(cursor="")
+        self._set_buttons_state("normal")
         messagebox.showerror("收信錯誤", f"無法連線：{err}")
 
     def _update_list(self):
