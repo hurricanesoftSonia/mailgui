@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Build MailGUI
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,13 +33,59 @@ jobs:
             dist/MailGUI.exe
             dist/config.json
 
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Build .app
+        run: |
+          pyinstaller --onefile --windowed --name MailGUI mailgui.py
+
+      - name: Package as zip
+        run: |
+          cp config.json dist/config.json
+          cd dist
+          zip -r MailGUI-macOS.zip MailGUI.app config.json
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MailGUI-macOS
+          path: dist/MailGUI-macOS.zip
+
+  release:
+    needs: [build-windows, build-macos]
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MailGUI-Windows
+          path: artifacts/windows
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MailGUI-macOS
+          path: artifacts/macos
+
       - name: Create Release
-        if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}
           name: MailGUI v1.0.${{ github.run_number }}
-          files: dist/MailGUI.exe
+          files: |
+            artifacts/windows/MailGUI.exe
+            artifacts/macos/MailGUI-macOS.zip
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
