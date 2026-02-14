@@ -2,6 +2,8 @@
 MailGUI - Hurricane Software Mail Client
 A Windows-friendly desktop email client with SMTP send and IMAP receive.
 """
+__version__ = "1.1.0"
+
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 import imaplib
@@ -472,7 +474,7 @@ class ComposeDialog(tk.Toplevel):
 class MailGUI:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("📧 MailGUI - Hurricane Software Mail Client")
+        self.root.title(f"📧 MailGUI v{__version__} - Hurricane Software Mail Client")
         self.root.geometry("1000x650")
         self.config = MailConfig()
         self.messages = []  # list of (uid, flags, parsed_msg, raw)
