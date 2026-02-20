@@ -95,7 +95,7 @@ pyinstaller --onefile --windowed --name MailGUI mailgui.py
 
 - Python 3.9+
 - tkinter (內建 GUI)
-- imaplib / smtplib (標準庫)
+- poplib / imaplib / smtplib (標準庫)
 - cryptography (密碼加密)
 
 ## License
